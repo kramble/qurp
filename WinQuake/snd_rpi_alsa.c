@@ -36,55 +36,8 @@ static int alsa_bufsize;
 static char *alsa_buffer;
 static snd_pcm_uframes_t alsa_frames, alsa_remaining_frames;
 
-static unsigned int ALSA_bufpos;	// Used in fill_audio
-static unsigned int ALSA_buflen;
-
-static void ALSA_fill_audio(void *udata, char *stream, int len)
-{
-	// Just repurpose SDL_callback_fill_audio for now (overkill)
-
-	// shm-> buffer is filled via snd_dma.c S_Update() calls S_Update_()
-	// calls snd_mix.c S_PaintChannels() then S_TransferPaintBuffer() then
-	// S_TransferStereo16() then Snd_WriteLinearBlastStereo16() 
-
-	if (!shm)	// This would be bad
-	{
-		// Con_Printf("\nAudio callback shm is NULL !!\n"); // DEBUG
-		return;	
-	}
-
-#if 0
-	// slow version
-	unsigned int i;
-	for (i=0; i<len; i++)
-	{
-		stream[i] = shm->buffer[ALSA_bufpos++];
-		if (ALSA_bufpos >= ALSA_buflen)
-			ALSA_bufpos = 0;
-	}
-#else
-	// better version uses memcpy and updates ALSA_bufpos once only
-	if (ALSA_bufpos + len > ALSA_buflen)
-	{
-		// This normally does not happen if shm->buffer is a
-		// multiple of the SDL audio buffer, but we should cope anyway
-		// Con_Printf("\nAudio callback buffer mis-aligned!!\n"); // DEBUG
-		unsigned int start = ALSA_bufpos;
-		unsigned int count = ALSA_buflen - ALSA_bufpos;
-		memcpy(stream, shm->buffer+ALSA_bufpos, count);
-		memcpy(stream + count, shm->buffer, len - count);
-		ALSA_bufpos = len - count;
-	}
-	else
-	{
-		memcpy(stream, shm->buffer+ALSA_bufpos, len);
-		if (ALSA_bufpos + len == ALSA_buflen)
-			ALSA_bufpos = 0;
-		else
-			ALSA_bufpos += len;
-	}
-#endif
-}
+static unsigned int DMA_bufpos;
+static unsigned int DMA_buflen;
 
 qboolean SNDDMA_Init(void)
 {
@@ -97,11 +50,6 @@ qboolean SNDDMA_Init(void)
 	snd_inited = 0;
 
 	Con_Printf("\nSNDDMA_Init Entered\n");
-
-	// BUG FIXME This needs to be here else we get seg fault on init failure
-	// ... bug is in snd.dma.c S_Init() which prints shm->speed regardless
-	shm = &sn;		// See snd_dma.c, sn is global volatile dma_t
-				// defined in sound.h
 
 	rc = snd_pcm_open(&alsa_handle, "default",
                     SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
@@ -150,6 +98,8 @@ qboolean SNDDMA_Init(void)
 	alsa_bufsize = alsa_frames * 2 * 2;	// 2 bytes per channel
 	alsa_buffer = (char *) malloc (alsa_bufsize);
 
+	shm = &sn;		// See snd_dma.c, sn is global volatile dma_t
+				// defined in sound.h
 	shm->splitbuffer = 0;
 	shm->samplebits = 16;
 	shm->speed = 22050;
@@ -160,8 +110,8 @@ qboolean SNDDMA_Init(void)
 	// samples is mono samples (see dma_t in sound.h), so times channels
 	// shm->samples = 4 * wanted.samples * shm->channels;
 	shm->samples = 4 * alsa_bufsize;
-	ALSA_buflen = shm->samples * (shm->samplebits/8);
-	shm->buffer = (unsigned char*) malloc(ALSA_buflen);
+	DMA_buflen = shm->samples * (shm->samplebits/8);
+	shm->buffer = (unsigned char*) malloc(DMA_buflen);
 
 	shm->submission_chunk = 1;
 	shm->samplepos = 0;
@@ -237,24 +187,32 @@ int SNDDMA_GetDMAPos(void)
 
 	if (advance)
 	{
-		alsa_remaining_frames = alsa_frames;
+		// TODO FIXME This memcpy is superfluous, we should pass a
+		// pointer to shm->buffer directly to snd_pcm_writei() above
 
-		// Repurpose SDL_callback_fill_audio for now (overkill)
-		ALSA_fill_audio(NULL, alsa_buffer, alsa_bufsize);
+		// NB shm->buffer size MUST be a multiple of alsa_buffer size
+
+		if (shm && shm->buffer)
+			memcpy(alsa_buffer, shm->buffer+DMA_bufpos, alsa_bufsize);
+
+		if (DMA_bufpos + alsa_bufsize >= DMA_buflen)
+			DMA_bufpos = 0;
+		else
+			DMA_bufpos += alsa_bufsize;
 	}
 
 	// samplepos counts mono samples (see dma_t in sound.h)
-	shm->samplepos = ALSA_bufpos / (shm->samplebits / 8);
+	shm->samplepos = DMA_bufpos / (shm->samplebits / 8);
 	return shm->samplepos;
 
 }
 
 void SNDDMA_Shutdown(void)
 {
-	Con_Printf("\nSNDDMA_Shutdown entered\n");	// DEBUG
+	Con_Printf("\nSNDDMA_Shutdown\n");	// DEBUG
 	if (snd_inited)
 	{
-		Con_Printf("Close Audio\n");
+		Con_Printf("Closing Audio\n");
 		snd_pcm_drain(alsa_handle);
 		snd_pcm_close(alsa_handle);
 		snd_inited = 0;

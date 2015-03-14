@@ -143,7 +143,7 @@ void S_Startup (void)
 
 	if (!fakedma)
 	{
-		Con_Printf("S_Startup: Calling SNDDMA_Init\n");
+		// Con_Printf("S_Startup: Calling SNDDMA_Init\n");
 		rc = SNDDMA_Init();
 
 		if (!rc)
@@ -230,11 +230,15 @@ void S_Init (void)
 		shm->buffer = Hunk_AllocName(1<<16, "shmbuf");
 	}
 
-	Con_Printf ("Sound sampling rate: %i\n", shm->speed);
+	if (shm)
+		Con_Printf ("Sound sampling rate: %i\n", shm->speed);
+	// else
+	//	Con_Printf ("shm is NULL!!\n");
+		
 
 	// provides a tick sound until washed clean
 
-//	if (shm->buffer)
+//	if (shm && shm->buffer)
 //		shm->buffer[4] = shm->buffer[5] = 0x7f;	// force a pop for debugging
 
 	ambient_sfx[AMBIENT_WATER] = S_PrecacheSound ("ambience/water1.wav");
