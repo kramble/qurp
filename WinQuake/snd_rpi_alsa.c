@@ -33,7 +33,6 @@ int snd_inited;
 
 static snd_pcm_t *alsa_handle;
 static int alsa_bufsize;
-static char *alsa_buffer;
 static snd_pcm_uframes_t alsa_frames, alsa_remaining_frames;
 
 static unsigned int DMA_bufpos;
@@ -96,7 +95,6 @@ qboolean SNDDMA_Init(void)
 	
 	snd_pcm_hw_params_get_period_size(params, &alsa_frames, &dir);
 	alsa_bufsize = alsa_frames * 2 * 2;	// 2 bytes per channel
-	alsa_buffer = (char *) malloc (alsa_bufsize);
 
 	shm = &sn;		// See snd_dma.c, sn is global volatile dma_t
 				// defined in sound.h
@@ -129,7 +127,7 @@ int SNDDMA_GetDMAPos(void)
 
 	verbose && printf("SNDDMA_GetDMAPos\n");
 
-	if (!snd_inited)
+	if ( !(snd_inited && shm && shm->buffer) )
 		return 0;
 
 	// Attempt to write for every call from mixer (roughly every host frame)
@@ -138,6 +136,7 @@ int SNDDMA_GetDMAPos(void)
 	// but this seems to work OK for now
 
 	// NB NON-blocking write, so most calls return EAGAIN or short write
+	// NB shm->buffer size MUST be a multiple of alsa_buffer size
 
 	if (alsa_remaining_frames <= 0 || alsa_remaining_frames > alsa_frames)
 	{
@@ -146,7 +145,7 @@ int SNDDMA_GetDMAPos(void)
 	}
 
 	// Adjust buffer for partial writes (4 bytes per frame)
-	char *buf = alsa_buffer + 4 * (alsa_frames - alsa_remaining_frames);
+	char *buf = shm->buffer + DMA_bufpos + 4 * (alsa_frames - alsa_remaining_frames);
 
 	rc = snd_pcm_writei(alsa_handle, buf, alsa_remaining_frames);
 	if (rc == -EAGAIN)
@@ -187,14 +186,6 @@ int SNDDMA_GetDMAPos(void)
 
 	if (advance)
 	{
-		// TODO FIXME This memcpy is superfluous, we should pass a
-		// pointer to shm->buffer directly to snd_pcm_writei() above
-
-		// NB shm->buffer size MUST be a multiple of alsa_buffer size
-
-		if (shm && shm->buffer)
-			memcpy(alsa_buffer, shm->buffer+DMA_bufpos, alsa_bufsize);
-
 		if (DMA_bufpos + alsa_bufsize >= DMA_buflen)
 			DMA_bufpos = 0;
 		else
